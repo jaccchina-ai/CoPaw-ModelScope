@@ -1,0 +1,19 @@
+# 敏感配置文件
+config.json
+*.json
+!T01_*.md
+
+# 数据库文件
+*.db
+copaw.db/
+
+# 会话和缓存
+sessions/
+.clawhub/
+__pycache__/
+*.pyc
+
+# 临时文件
+*.tmp
+*.log
+.DS_Store
