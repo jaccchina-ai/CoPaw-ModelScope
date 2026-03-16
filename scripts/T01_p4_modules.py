@@ -1,81 +1,104 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-T01龙头战法 - P4深度分析模块 V2.0（完整版）
-================================================
+T01任务 - P4优化模块集合
 包含：
-1. UnlockRiskDetector - 解禁风险检测
-2. ReduceRiskDetector - 减持风险检测
-3. InvestorAnalyzer - 游资画像分析
-4. EmotionCycleAnalyzer - 情绪周期判断（增强版）
-5. SectorRotationAnalyzer - 板块轮动预测
-6. AuctionFundFlowAnalyzer - 竞价资金流向分析
-7. MarketPredictionEngine - 市场预测引擎（新增）
-8. RiskAssessmentEngine - 综合风控评估（新增）
-
-依赖数据源：仅使用stockAPI
+1. 个股解禁风险检测
+2. 大股东减持风险检测
+3. 游资画像分析
+4. 情绪周期细化
+5. 板块轮动预测
+6. 竞价资金流向分析 ★新增
+7. 回测验证系统 ★新增
 """
 
 import json
 import os
-import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass
-from collections import defaultdict
-import sys
+import requests
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from stockapi_client import StockAPIClient
+# 尝试导入搜索模块
+try:
+    from tavily import tavily_search
+    TAVILY_AVAILABLE = True
+except ImportError:
+    TAVILY_AVAILABLE = False
 
-# 数据路径
-DATA_BASE_DIR = "/mnt/workspace/working/data/T01"
+# API配置
+API_BASE_URL = "https://www.stockapi.com.cn"
+API_TOKEN = "516f4946db85f3f172e8ed29c6ad32f26148c58a38b33c74"
 
 # ==================== 游资画像数据库 ====================
-
+# 知名游资席位及其风格特征
 FAMOUS_INVESTORS = {
+    # 顶级游资（胜率高、影响力大）
+    '拉萨': {
+        'names': ['拉萨', '东方财富拉萨', '拉萨团结路', '拉萨东环路'],
+        'style': '趋势',  # 趋势/短线
+        'win_rate': 0.65,
+        'avg_holding': 3,  # 平均持仓天数
+        'score_bonus': 8,
+        'description': '顶级游资，趋势操作为主'
+    },
     '章盟主': {
-        'names': ['章盟主', '国泰君安上海江苏路', '中信上海溧阳路'],
+        'names': ['章盟主', '章建平', '国泰君安上海分公司'],
         'style': '趋势',
+        'win_rate': 0.70,
+        'avg_holding': 5,
+        'score_bonus': 10,
+        'description': '顶级游资，偏好大票趋势'
+    },
+    '赵老哥': {
+        'names': ['赵老哥', '赵强', '银河绍兴', '浙商绍兴'],
+        'style': '短线',
+        'win_rate': 0.68,
+        'avg_holding': 2,
+        'score_bonus': 8,
+        'description': '顶级游资，短线快进快出'
+    },
+    '欢乐海岸': {
+        'names': ['欢乐海岸', '中泰深圳欢乐海岸', '华泰深圳欢乐海岸'],
+        'style': '趋势',
+        'win_rate': 0.65,
+        'avg_holding': 4,
+        'score_bonus': 7,
+        'description': '知名游资，趋势操作'
+    },
+    '作手新一': {
+        'names': ['作手新一', '新一', '南京'],
+        'style': '短线',
+        'win_rate': 0.62,
+        'avg_holding': 2,
+        'score_bonus': 6,
+        'description': '新生代游资，短线犀利'
+    },
+    '小鳄鱼': {
+        'names': ['小鳄鱼', '鳄鱼', '中投'],
+        'style': '短线',
+        'win_rate': 0.60,
+        'avg_holding': 2,
+        'score_bonus': 5,
+        'description': '活跃游资，短线为主'
+    },
+    '炒股养家': {
+        'names': ['炒股养家', '养家', '华鑫'],
+        'style': '趋势',
+        'win_rate': 0.63,
+        'avg_holding': 3,
+        'score_bonus': 6,
+        'description': '知名游资，稳健操作'
+    },
+    '孙哥': {
+        'names': ['孙哥', '孙煜', '中信上海溧阳路'],
+        'style': '短线',
         'win_rate': 0.58,
         'avg_holding': 1,
         'score_bonus': 4,
         'description': '活跃游资，超短线'
     },
-    '欢乐海岸': {
-        'names': ['欢乐海岸', '中泰深圳欢乐海岸', '华鑫深圳分公司'],
-        'style': '连板',
-        'win_rate': 0.55,
-        'avg_holding': 2,
-        'score_bonus': 5,
-        'description': '连板接力，敢于锁仓'
-    },
-    '赵老哥': {
-        'names': ['赵老哥', '银河绍兴', '浙商绍兴分公司'],
-        'style': '短线',
-        'win_rate': 0.60,
-        'avg_holding': 1,
-        'score_bonus': 6,
-        'description': '老牌游资，稳健'
-    },
-    '作手新一': {
-        'names': ['作手新一', '南京证券南京大钟亭'],
-        'style': '短线',
-        'win_rate': 0.57,
-        'avg_holding': 1,
-        'score_bonus': 5,
-        'description': '新生代游资'
-    },
-    '小鳄鱼': {
-        'names': ['小鳄鱼', '中投无锡清扬路', '华泰扬州文昌中路'],
-        'style': '短线',
-        'win_rate': 0.56,
-        'avg_holding': 1,
-        'score_bonus': 4,
-        'description': '活跃游资'
-    },
     '机构': {
-        'names': ['机构专用', '机构', '基金', '社保', 'QFII', 'RQFII'],
+        'names': ['机构专用', '机构'],
         'style': '趋势',
         'win_rate': 0.70,
         'avg_holding': 7,
@@ -92,32 +115,32 @@ FAMOUS_INVESTORS = {
     }
 }
 
-# 情绪周期阈值
-EMOTION_THRESHOLDS = {
-    'recovery_early': {'limit_up_count': (20, 40), 'avg_lb': (1, 1.5), 'seal_ratio': (3, 8)},
-    'recovery_mid': {'limit_up_count': (40, 70), 'avg_lb': (1.5, 2.5), 'seal_ratio': (5, 15)},
-    'rising': {'limit_up_count': (70, 100), 'avg_lb': (2, 3), 'seal_ratio': (10, 20)},
-    'climax': {'limit_up_count': (100, 150), 'avg_lb': (3, 5), 'seal_ratio': (15, 30)},
-    'falling': {'limit_up_count': (150, 200), 'avg_lb': (1, 2), 'seal_ratio': (5, 15)}
-}
+# 机构席位关键词
+INSTITUTION_KEYWORDS = ['机构专用', '机构', '基金', '社保', 'QFII', 'RQFII']
 
-
-# ==================== 1. 解禁风险检测器 ====================
 
 class UnlockRiskDetector:
     """个股解禁风险检测器"""
     
     def __init__(self):
-        self.client = StockAPIClient()
         self.cache = {}
     
     def check_unlock_risk(self, stock_name: str, stock_code: str) -> Dict:
         """
         检测个股解禁风险
         
-        由于stockAPI不直接提供解禁数据，使用估值方法：
-        1. 新股/次新股（上市<1年）解禁风险高
-        2. 检查流通市值占比
+        Args:
+            stock_name: 股票名称
+            stock_code: 股票代码
+        
+        Returns:
+            dict: {
+                'has_risk': bool,
+                'unlock_date': str or None,
+                'unlock_ratio': float,
+                'risk_level': str,  # 高/中/低/无
+                'detail': str
+            }
         """
         result = {
             'has_risk': False,
@@ -127,127 +150,192 @@ class UnlockRiskDetector:
             'detail': '无解禁风险'
         }
         
-        try:
-            # 获取涨停股数据
-            today = self.client.get_today_date()
-            stocks = self.client.get_limit_up_stocks(today)
-            
-            for stock in stocks:
-                if stock.get('code') == stock_code:
-                    # 检查流通市值
-                    flow_capital = float(stock.get('flowCapital', 0))
-                    total_capital = float(stock.get('totalCapital', 0))
-                    
-                    if total_capital > 0:
-                        flow_ratio = flow_capital / total_capital
-                        
-                        # 流通比例低，解禁压力大
-                        if flow_ratio < 0.3:
-                            result['has_risk'] = True
-                            result['unlock_ratio'] = 1 - flow_ratio
-                            result['risk_level'] = '高'
-                            result['detail'] = f'流通比例仅{flow_ratio*100:.1f}%，解禁压力大'
-                        elif flow_ratio < 0.5:
-                            result['has_risk'] = True
-                            result['unlock_ratio'] = 1 - flow_ratio
-                            result['risk_level'] = '中'
-                            result['detail'] = f'流通比例{flow_ratio*100:.1f}%，需关注解禁'
-                    
-                    break
-            
+        if not TAVILY_AVAILABLE:
+            result['detail'] = '搜索服务不可用'
             return result
+        
+        try:
+            # 搜索解禁信息
+            query = f"{stock_name} {stock_code} 限售股解禁 解禁日期 2024 2025"
+            search_result = tavily_search(
+                query=query,
+                max_results=5,
+                search_depth='basic',
+                time_range='month'
+            )
+            
+            if not search_result or 'results' not in search_result:
+                return result
+            
+            today = datetime.now()
+            check_end_date = today + timedelta(days=30)
+            
+            for news in search_result.get('results', []):
+                content = news.get('content', '')
+                title = news.get('title', '')
+                full_text = f"{title} {content}"
+                
+                # 检查是否在风险期内
+                if '解禁' in full_text:
+                    # 提取解禁比例
+                    import re
+                    
+                    # 尝试提取日期
+                    date_pattern = r'(\d{4}年\d{1,2}月\d{1,2}日|\d{4}-\d{2}-\d{2})'
+                    dates = re.findall(date_pattern, full_text)
+                    
+                    # 尝试提取比例
+                    ratio_pattern = r'解禁.*?(\d+\.?\d*)%'
+                    ratios = re.findall(ratio_pattern, full_text)
+                    
+                    unlock_ratio = 0
+                    if ratios:
+                        try:
+                            unlock_ratio = float(ratios[0])
+                        except:
+                            pass
+                    
+                    # 判断风险等级
+                    if unlock_ratio >= 10:
+                        result['has_risk'] = True
+                        result['unlock_ratio'] = unlock_ratio
+                        result['risk_level'] = '高'
+                        result['detail'] = f"高风险：{unlock_ratio}%股份待解禁"
+                        break
+                    elif unlock_ratio >= 5:
+                        result['has_risk'] = True
+                        result['unlock_ratio'] = unlock_ratio
+                        result['risk_level'] = '中'
+                        result['detail'] = f"中等风险：{unlock_ratio}%股份待解禁"
+                        break
+                    elif unlock_ratio > 0:
+                        result['has_risk'] = True
+                        result['unlock_ratio'] = unlock_ratio
+                        result['risk_level'] = '低'
+                        result['detail'] = f"低风险：{unlock_ratio}%股份待解禁"
             
         except Exception as e:
-            return result
-    
-    def batch_check(self, stocks: List[Dict]) -> List[Dict]:
-        """批量检测"""
-        results = []
-        for stock in stocks:
-            r = self.check_unlock_risk(stock.get('name', ''), stock.get('code', ''))
-            results.append({
-                'code': stock.get('code'),
-                'name': stock.get('name'),
-                **r
-            })
-        return results
+            result['detail'] = f'检测失败: {str(e)}'
+        
+        return result
 
-
-# ==================== 2. 减持风险检测器 ====================
 
 class ReduceRiskDetector:
-    """减持风险检测器"""
+    """大股东减持风险检测器"""
     
     def __init__(self):
-        self.client = StockAPIClient()
+        self.cache = {}
     
-    def check_reduce_risk(self, stock_name: str, stock_code: str, 
-                          dragon_tiger_data: Dict = None) -> Dict:
+    def check_reduce_risk(self, stock_name: str, stock_code: str) -> Dict:
         """
-        检测减持风险
+        检测大股东减持风险
         
-        通过龙虎榜数据检测：
-        1. 大股东/高管减持
-        2. 机构大额卖出
+        Args:
+            stock_name: 股票名称
+            stock_code: 股票代码
+        
+        Returns:
+            dict: {
+                'has_risk': bool,
+                'reduce_ratio': float,
+                'reduce_holder': str or None,
+                'risk_level': str,
+                'detail': str
+            }
         """
         result = {
             'has_risk': False,
+            'reduce_ratio': 0,
+            'reduce_holder': None,
             'risk_level': '无',
-            'detail': '无减持风险',
-            'sell_amount': 0,
-            'sell_ratio': 0
+            'detail': '无减持风险'
         }
         
-        if not dragon_tiger_data:
+        if not TAVILY_AVAILABLE:
+            result['detail'] = '搜索服务不可用'
             return result
         
         try:
-            sell_amount = float(dragon_tiger_data.get('sellAmount', 0))
-            buy_amount = float(dragon_tiger_data.get('buyAmount', 0))
+            # 搜索减持公告
+            query = f"{stock_name} {stock_code} 减持公告 大股东减持 减持计划"
+            search_result = tavily_search(
+                query=query,
+                max_results=5,
+                search_depth='basic',
+                time_range='month'
+            )
             
-            if sell_amount > 0:
-                # 净卖出比例
-                net_sell = sell_amount - buy_amount
-                sell_ratio = net_sell / sell_amount if sell_amount > 0 else 0
+            if not search_result or 'results' not in search_result:
+                return result
+            
+            for news in search_result.get('results', []):
+                content = news.get('content', '')
+                title = news.get('title', '')
+                full_text = f"{title} {content}"
                 
-                # 大额净卖出
-                if net_sell > 1e8:  # 1亿
-                    result['has_risk'] = True
-                    result['risk_level'] = '高'
-                    result['sell_amount'] = net_sell
-                    result['sell_ratio'] = sell_ratio
-                    result['detail'] = f'龙虎榜净卖出{net_sell/1e8:.2f}亿'
-                elif net_sell > 5e7:  # 5000万
-                    result['has_risk'] = True
-                    result['risk_level'] = '中'
-                    result['sell_amount'] = net_sell
-                    result['sell_ratio'] = sell_ratio
-                    result['detail'] = f'龙虎榜净卖出{net_sell/1e7:.2f}千万'
-            
-            return result
+                # 检查是否有减持计划
+                if '减持' in full_text and ('公告' in full_text or '计划' in full_text):
+                    # 排除"不减持"的公告
+                    if '不减持' in full_text or '承诺不减持' in full_text or '终止减持' in full_text:
+                        continue
+                    
+                    # 提取减持比例
+                    import re
+                    ratio_pattern = r'减持.*?(\d+\.?\d*)%'
+                    ratios = re.findall(ratio_pattern, full_text)
+                    
+                    reduce_ratio = 0
+                    if ratios:
+                        try:
+                            reduce_ratio = float(ratios[0])
+                        except:
+                            pass
+                    
+                    # 判断风险等级
+                    if reduce_ratio >= 3:
+                        result['has_risk'] = True
+                        result['reduce_ratio'] = reduce_ratio
+                        result['risk_level'] = '高'
+                        result['detail'] = f"高风险：大股东计划减持{reduce_ratio}%"
+                        break
+                    elif reduce_ratio >= 1:
+                        result['has_risk'] = True
+                        result['reduce_ratio'] = reduce_ratio
+                        result['risk_level'] = '中'
+                        result['detail'] = f"中等风险：大股东计划减持{reduce_ratio}%"
+                        break
+                    elif reduce_ratio > 0:
+                        result['has_risk'] = True
+                        result['reduce_ratio'] = reduce_ratio
+                        result['risk_level'] = '低'
+                        result['detail'] = f"低风险：大股东计划减持{reduce_ratio}%"
+                        break
             
         except Exception as e:
-            return result
+            result['detail'] = f'检测失败: {str(e)}'
+        
+        return result
 
-
-# ==================== 3. 游资画像分析器 ====================
 
 class InvestorAnalyzer:
-    """龙虎榜游资画像分析器"""
+    """游资画像分析器"""
     
     def __init__(self):
-        self.client = StockAPIClient()
+        self.investors_db = FAMOUS_INVESTORS
     
-    def analyze_investors(self, dragon_tiger_data: Dict) -> Dict:
+    def analyze_dragon_tiger(self, dragon_tiger_data: Dict) -> Dict:
         """
-        分析龙虎榜游资
+        分析龙虎榜游资情况
+        
+        Args:
+            dragon_tiger_data: 龙虎榜数据
         
         Returns:
-            {
+            dict: {
                 'has_famous_investor': bool,
-                'investors': [{'name', 'style', 'win_rate', 'score_bonus'}],
-                'total_score_bonus': float,
-                'style_analysis': {'trend': int, 'short': int},
+                'investors': list,  # 识别出的游资列表
+                'total_score_bonus': float,  # 总加分
+                'style_analysis': dict,  # 风格分析
                 'avg_win_rate': float,
                 'recommendation': str
             }
@@ -264,698 +352,909 @@ class InvestorAnalyzer:
         if not dragon_tiger_data:
             return result
         
-        # 解析龙虎榜数据中的营业部名称
-        # 由于stockAPI返回的龙虎榜数据格式可能不同，需要适配
-        try:
-            # 尝试从数据中提取买卖方信息
-            # 这里简化处理，实际需要根据API返回格式解析
-            net_buy = float(dragon_tiger_data.get('buyAmount', 0)) - float(dragon_tiger_data.get('sellAmount', 0))
+        identified_investors = []
+        score_bonus = 0
+        win_rates = []
+        trend_count = 0
+        short_count = 0
+        
+        # 获取买入席位信息
+        buy_info = dragon_tiger_data.get('buyInfo', [])
+        if isinstance(buy_info, str):
+            buy_info = []
+        
+        # 检查买一至买五席位
+        for i in range(1, 6):
+            seat_key = f'buySeat{i}'
+            seat_name = dragon_tiger_data.get(seat_key, '')
             
-            if net_buy > 0:
-                # 有净买入，加分
-                result['total_score_bonus'] = min(net_buy / 1e8, 5)  # 最多加5分
-                result['recommendation'] = f'净买入{net_buy/1e8:.2f}亿，资金看好'
+            if not seat_name:
+                continue
             
-            return result
-            
-        except Exception as e:
-            return result
+            # 匹配知名游资
+            matched = self._match_investor(seat_name)
+            if matched:
+                result['has_famous_investor'] = True
+                investor_info = FAMOUS_INVESTORS[matched]
+                
+                identified_investors.append({
+                    'name': matched,
+                    'seat': seat_name,
+                    'style': investor_info['style'],
+                    'win_rate': investor_info['win_rate'],
+                    'score_bonus': investor_info['score_bonus'],
+                    'description': investor_info['description']
+                })
+                
+                score_bonus += investor_info['score_bonus']
+                win_rates.append(investor_info['win_rate'])
+                
+                if investor_info['style'] == '趋势':
+                    trend_count += 1
+                else:
+                    short_count += 1
+        
+        # 检查机构席位
+        for keyword in INSTITUTION_KEYWORDS:
+            seat_str = str(dragon_tiger_data)
+            if keyword in seat_str:
+                if '机构' not in [inv['name'] for inv in identified_investors]:
+                    identified_investors.append({
+                        'name': '机构',
+                        'seat': keyword,
+                        'style': '趋势',
+                        'win_rate': 0.70,
+                        'score_bonus': 10,
+                        'description': '机构资金'
+                    })
+                    score_bonus += 10
+                    win_rates.append(0.70)
+                    trend_count += 1
+                    result['has_famous_investor'] = True
+                break
+        
+        result['investors'] = identified_investors
+        result['total_score_bonus'] = min(score_bonus, 20)  # 最高加20分
+        result['style_analysis'] = {'trend': trend_count, 'short': short_count}
+        result['avg_win_rate'] = sum(win_rates) / len(win_rates) if win_rates else 0
+        
+        # 生成建议
+        if identified_investors:
+            investor_names = [inv['name'] for inv in identified_investors]
+            if trend_count > short_count:
+                result['recommendation'] = f"趋势游资介入({', '.join(investor_names)})，持续性较好"
+            else:
+                result['recommendation'] = f"短线游资介入({', '.join(investor_names)})，注意快进快出"
+        
+        return result
     
-    def analyze_dragon_tiger(self, dragon_tiger_data: Dict) -> Dict:
-        """龙虎榜分析 - analyze_investors的别名"""
-        return self.analyze_investors(dragon_tiger_data)
-    
-    def identify_investor(self, name: str) -> Optional[Dict]:
-        """识别游资身份"""
-        for investor_name, info in FAMOUS_INVESTORS.items():
-            if any(alias in name for alias in info['names']):
-                return {
-                    'name': investor_name,
-                    'style': info['style'],
-                    'win_rate': info['win_rate'],
-                    'score_bonus': info['score_bonus'],
-                    'description': info['description']
-                }
+    def _match_investor(self, seat_name: str) -> Optional[str]:
+        """匹配游资名称"""
+        for investor_name, investor_info in FAMOUS_INVESTORS.items():
+            for alias in investor_info['names']:
+                if alias in seat_name:
+                    return investor_name
         return None
 
 
-# ==================== 4. 情绪周期分析器（增强版） ====================
-
 class EmotionCycleAnalyzer:
-    """情绪周期分析器 - 增强版"""
+    """情绪周期细化分析器"""
     
+    # 情绪周期阶段定义
     STAGES = {
-        '恢复初期': {
-            'position_limit': 0.1,
-            'description': '市场刚经历大幅调整，谨慎操作',
-            'score_threshold': (0, 25)
+        'ice_point': {
+            'name': '冰点期',
+            'description': '市场极度低迷，涨停家数极少',
+            'position_limit': 0,
+            'score_threshold': 15,  # 需要更高分数才能入选
+            'features': ['涨停<30家', '连板高度<3', '炸板率>50%']
         },
-        '恢复中期': {
+        'recovery_early': {
+            'name': '恢复初期',
+            'description': '市场开始回暖，谨慎试错',
             'position_limit': 0.3,
-            'description': '市场情绪回暖，可适度参与',
-            'score_threshold': (25, 50)
+            'score_threshold': 12,
+            'features': ['涨停30-50家', '连板高度3-4', '炸板率30-50%']
         },
-        '上升期': {
+        'recovery_mid': {
+            'name': '恢复中期',
+            'description': '市场活跃，正常参与',
             'position_limit': 0.5,
-            'description': '市场情绪良好，正常参与',
-            'score_threshold': (50, 70)
+            'score_threshold': 10,
+            'features': ['涨停50-80家', '连板高度4-5', '炸板率20-30%']
         },
-        '高潮期': {
+        'climax': {
+            'name': '高潮期',
+            'description': '市场亢奋，可积极操作',
+            'position_limit': 1.0,
+            'score_threshold': 8,
+            'features': ['涨停>80家', '连板高度>5', '炸板率<20%']
+        },
+        'divergence': {
+            'name': '分歧期',
+            'description': '市场分歧加大，减仓观望',
             'position_limit': 0.3,
-            'description': '市场过热，注意风险',
-            'score_threshold': (70, 85)
+            'score_threshold': 12,
+            'features': ['炸板率上升', '连板股分化', '情绪指标背离']
         },
-        '退潮期': {
-            'position_limit': 0.0,
+        'decline': {
+            'name': '退潮期',
             'description': '市场退潮，空仓避险',
-            'score_threshold': (85, 100)
+            'position_limit': 0,
+            'score_threshold': 15,
+            'features': ['涨停减少', '跌停增加', '亏钱效应明显']
         }
     }
     
-    def __init__(self):
-        self.client = StockAPIClient()
-    
-    def analyze_emotion(self, date: str = None) -> Dict:
+    def analyze(self, emotion_data: Dict) -> Dict:
         """
         分析情绪周期
         
-        综合指标：
-        1. 涨停股数量
-        2. 平均连板高度
-        3. 平均封单强度
-        4. 炸板率
+        Args:
+            emotion_data: 情绪周期API返回的数据
+        
+        Returns:
+            dict: {
+                'stage': str,  # 当前阶段
+                'stage_name': str,
+                'position_limit': float,
+                'score_threshold': float,
+                'features': list,
+                'description': str,
+                'analysis': dict
+            }
         """
-        if date is None:
-            date = self.client.get_today_date()
+        result = {
+            'stage': 'recovery_mid',
+            'stage_name': '恢复中期',
+            'position_limit': 0.5,
+            'score_threshold': 10,
+            'features': [],
+            'description': '市场活跃，正常参与',
+            'analysis': {}
+        }
+        
+        if not emotion_data:
+            return result
         
         try:
-            # 获取涨停股数据
-            stocks = self.client.get_limit_up_stocks(date)
+            # 解析情绪数据
+            col_names = emotion_data.get('colNameList', [])
+            content_list = emotion_data.get('contentList', [])
             
-            if not stocks:
-                return self._default_result('无法获取涨停数据')
+            if not content_list:
+                return result
             
-            # 计算各项指标
-            limit_up_count = len(stocks)
-            avg_lb = self._calc_avg_lb(stocks)
-            avg_seal_ratio = self._calc_avg_seal_ratio(stocks)
-            bomb_rate = self._calc_bomb_rate(stocks)
+            # 获取最新数据
+            latest = content_list[-1] if content_list else []
+            data_dict = {}
+            for i, col in enumerate(col_names):
+                if i < len(latest):
+                    data_dict[col] = latest[i]
             
-            # 计算情绪得分
-            score = self._calc_emotion_score(
-                limit_up_count, avg_lb, avg_seal_ratio, bomb_rate
-            )
+            # 提取关键指标
+            zt_count = int(data_dict.get('ztjs', 0))  # 涨停家数
+            lb_height = int(data_dict.get('zxgd', 0))  # 最新高度（连板高度）
+            dmqx = float(data_dict.get('dmqx', 0))  # 大面情绪
+            drqx = float(data_dict.get('drqx', 0))  # 大肉情绪
+            dbcgl = float(data_dict.get('dbcgl', 0))  # 打板成功率
             
-            # 确定阶段
-            stage_name = self._determine_stage(score)
-            stage_info = self.STAGES.get(stage_name, self.STAGES['恢复中期'])
-            
-            return {
-                'date': date,
-                'emotion_score': score,
-                'stage_name': stage_name,
-                'position_limit': stage_info['position_limit'],
-                'description': stage_info['description'],
-                'metrics': {
-                    'limit_up_count': limit_up_count,
-                    'avg_lb': round(avg_lb, 2),
-                    'avg_seal_ratio': round(avg_seal_ratio, 2),
-                    'bomb_rate': round(bomb_rate, 2)
-                },
-                'risk_warning': self._generate_risk_warning(stage_name, score)
+            result['analysis'] = {
+                'zt_count': zt_count,
+                'lb_height': lb_height,
+                'dmqx': dmqx,
+                'drqx': drqx,
+                'dbcgl': dbcgl
             }
             
+            # 判断阶段
+            if zt_count < 30:
+                stage = 'ice_point'
+            elif zt_count < 50:
+                stage = 'recovery_early'
+            elif zt_count < 80:
+                # 进一步判断
+                if dbcgl > 70:
+                    stage = 'recovery_mid'
+                else:
+                    stage = 'recovery_early'
+            elif zt_count >= 80:
+                # 判断是否过热
+                if lb_height >= 7:
+                    stage = 'divergence'  # 过热后分歧
+                else:
+                    stage = 'climax'
+            else:
+                stage = 'recovery_mid'
+            
+            # 根据大面情绪修正
+            if dmqx > 50:  # 大面情绪高涨，说明亏钱效应明显
+                if stage in ['climax', 'recovery_mid']:
+                    stage = 'divergence'
+            
+            # 根据打板成功率修正
+            if dbcgl < 50:  # 打板成功率低于50%
+                if stage != 'ice_point':
+                    stage = 'decline'
+            
+            # 返回结果
+            stage_info = self.STAGES[stage]
+            result['stage'] = stage
+            result['stage_name'] = stage_info['name']
+            result['position_limit'] = stage_info['position_limit']
+            result['score_threshold'] = stage_info['score_threshold']
+            result['features'] = stage_info['features']
+            result['description'] = stage_info['description']
+            
         except Exception as e:
-            return self._default_result(f'分析异常: {str(e)}')
-    
-    def _calc_avg_lb(self, stocks: List) -> float:
-        """计算平均连板数"""
-        if not stocks:
-            return 1.0
-        lbs = [int(s.get('lbNum', 1)) for s in stocks]
-        return np.mean(lbs) if lbs else 1.0
-    
-    def _calc_avg_seal_ratio(self, stocks: List) -> float:
-        """计算平均封成比"""
-        ratios = []
-        for s in stocks:
-            ceiling_amount = float(s.get('ceilingAmount', 0))
-            amount = float(s.get('amount', 0))
-            if amount > 0:
-                ratios.append(ceiling_amount / amount * 100)
-        return np.mean(ratios) if ratios else 0
-    
-    def _calc_bomb_rate(self, stocks: List) -> float:
-        """计算炸板率"""
-        if not stocks:
-            return 0
-        bomb_count = sum(1 for s in stocks if int(s.get('bombNum', 0)) > 0)
-        return bomb_count / len(stocks)
-    
-    def _calc_emotion_score(self, limit_up_count, avg_lb, avg_seal_ratio, bomb_rate) -> int:
-        """计算情绪得分 0-100"""
-        # 涨停数量得分 (0-40分)
-        if limit_up_count >= 100:
-            count_score = 40
-        elif limit_up_count >= 70:
-            count_score = 30
-        elif limit_up_count >= 50:
-            count_score = 20
-        elif limit_up_count >= 30:
-            count_score = 10
-        else:
-            count_score = 5
+            print(f"情绪周期分析失败: {e}")
         
-        # 连板高度得分 (0-30分)
-        if avg_lb >= 4:
-            lb_score = 30
-        elif avg_lb >= 3:
-            lb_score = 25
-        elif avg_lb >= 2:
-            lb_score = 15
-        else:
-            lb_score = 5
-        
-        # 封单强度得分 (0-20分)
-        if avg_seal_ratio >= 20:
-            seal_score = 20
-        elif avg_seal_ratio >= 10:
-            seal_score = 15
-        elif avg_seal_ratio >= 5:
-            seal_score = 10
-        else:
-            seal_score = 5
-        
-        # 炸板率扣分 (0-10分扣分)
-        bomb_penalty = bomb_rate * 10
-        
-        score = count_score + lb_score + seal_score - bomb_penalty
-        return max(0, min(100, int(score)))
-    
-    def _determine_stage(self, score: int) -> str:
-        """确定情绪阶段"""
-        for stage_name, info in self.STAGES.items():
-            low, high = info['score_threshold']
-            if low <= score < high:
-                return stage_name
-        return '恢复中期'
-    
-    def _generate_risk_warning(self, stage_name: str, score: int) -> str:
-        """生成风险提示"""
-        warnings = {
-            '恢复初期': '市场低迷，建议轻仓或空仓观望',
-            '高潮期': '市场过热，追高风险大，建议逐步减仓',
-            '退潮期': '市场退潮信号明显，建议空仓'
-        }
-        return warnings.get(stage_name, '')
-    
-    def _default_result(self, reason: str) -> Dict:
-        """默认结果"""
-        return {
-            'date': '',
-            'emotion_score': 50,
-            'stage_name': '恢复中期',
-            'position_limit': 0.3,
-            'description': reason,
-            'metrics': {},
-            'risk_warning': ''
-        }
+        return result
 
-
-# ==================== 5. 板块轮动分析器 ====================
 
 class SectorRotationAnalyzer:
     """板块轮动预测分析器"""
     
     def __init__(self):
-        self.client = StockAPIClient()
+        self.history_file = "/mnt/workspace/working/data/T01/sector_history.json"
         self.history = self._load_history()
     
     def _load_history(self) -> Dict:
-        """加载板块历史"""
-        history_file = os.path.join(DATA_BASE_DIR, 'sector_history.json')
-        if os.path.exists(history_file):
-            with open(history_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                # 适配两种格式：新格式是按日期组织的，旧格式是 {"records": [...]}
-                if 'records' in data:
-                    return {'records': data['records']}
-                # 按日期格式转换为records格式
-                records = []
-                for date_str in sorted(data.keys()):
-                    if date_str.count('-') == 2:  # 是日期格式
-                        day_record = {'date': date_str, 'sectors': []}
-                        for sector_name, info in data[date_str].items():
-                            day_record['sectors'].append({
-                                'name': sector_name,
-                                'strength': info.get('strength', 0),
-                                'rank': info.get('rank', 0)
-                            })
-                        records.append(day_record)
-                return {'records': records}
-        return {'records': []}
+        """加载历史板块数据"""
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
     
     def _save_history(self):
-        """保存板块历史"""
-        history_file = os.path.join(DATA_BASE_DIR, 'sector_history.json')
-        with open(history_file, 'w', encoding='utf-8') as f:
+        """保存历史板块数据"""
+        os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
+        with open(self.history_file, 'w', encoding='utf-8') as f:
             json.dump(self.history, f, ensure_ascii=False, indent=2)
     
-    def update_and_analyze(self, date: str, hot_sectors: List) -> Dict:
+    def update_and_analyze(self, date: str, hot_sectors: List[Dict]) -> Dict:
         """
         更新并分析板块轮动
         
         Args:
-            date: 日期
-            hot_sectors: 当日热点板块列表
+            date: 当前日期
+            hot_sectors: 当前热点板块列表
         
         Returns:
-            {
-                'rising_sectors': [],      # 上升板块
-                'falling_sectors': [],     # 下降板块
-                'sustained_sectors': [],   # 持续强势
-                'new_sectors': [],         # 新热点
+            dict: {
+                'rising_sectors': list,  # 热度上升板块
+                'declining_sectors': list,  # 热度下降板块
+                'new_sectors': list,  # 新进TOP10板块
+                'persistent_sectors': list,  # 持续强势板块
                 'recommendation': str
             }
         """
         result = {
             'rising_sectors': [],
-            'falling_sectors': [],
-            'sustained_sectors': [],
+            'declining_sectors': [],
             'new_sectors': [],
+            'persistent_sectors': [],
             'recommendation': ''
         }
         
         if not hot_sectors:
             return result
         
-        # 记录当日板块
-        today_record = {
-            'date': date,
-            'sectors': [
-                {
-                    'name': s.get('bkName', ''),
-                    'strength': float(s.get('qiangdu', 0)),
-                    'rank': i + 1
-                }
-                for i, s in enumerate(hot_sectors[:20])
-            ]
-        }
+        # 保存当前数据
+        current_data = {}
+        for i, sector in enumerate(hot_sectors[:15]):
+            current_data[sector.get('bkName', '')] = {
+                'rank': i + 1,
+                'strength': sector.get('qiangdu', 0),
+                'date': date
+            }
         
-        # 获取前几天的记录
-        records = self.history.get('records', [])[-5:]  # 最近5天
+        self.history[date] = current_data
         
-        # 分析轮动
-        if records:
-            prev_sectors = {}
-            for r in records[-3:]:  # 最近3天
-                for s in r.get('sectors', []):
-                    name = s['name']
-                    if name not in prev_sectors:
-                        prev_sectors[name] = []
-                    prev_sectors[name].append(s['strength'])
-            
-            today_sector_names = {s['name'] for s in today_record['sectors']}
-            
-            for s in today_record['sectors'][:10]:
-                name = s['name']
-                strength = s['strength']
-                
-                if name in prev_sectors:
-                    prev_avg = np.mean(prev_sectors[name])
-                    if strength > prev_avg * 1.2:
-                        result['rising_sectors'].append(name)
-                    elif strength < prev_avg * 0.8:
-                        result['falling_sectors'].append(name)
-                    else:
-                        result['sustained_sectors'].append(name)
-                else:
-                    result['new_sectors'].append(name)
+        # 获取最近3天的日期
+        dates = sorted(self.history.keys(), reverse=True)[:3]
         
-        # 保存今日记录
-        self.history['records'].append(today_record)
-        if len(self.history['records']) > 30:  # 只保留30天
-            self.history['records'] = self.history['records'][-30:]
-        self._save_history()
+        if len(dates) < 2:
+            result['recommendation'] = '数据不足，继续观察'
+            self._save_history()
+            return result
         
-        # 生成建议
-        if result['sustained_sectors']:
-            result['recommendation'] = f"持续强势: {', '.join(result['sustained_sectors'][:3])}。"
+        # 分析板块变化
+        today_data = self.history.get(dates[0], {})
+        yesterday_data = self.history.get(dates[1], {})
+        
+        if not today_data or not yesterday_data:
+            self._save_history()
+            return result
+        
+        # 1. 找出新进TOP10的板块
+        today_top10 = set(list(today_data.keys())[:10])
+        yesterday_top10 = set(list(yesterday_data.keys())[:10])
+        result['new_sectors'] = list(today_top10 - yesterday_top10)
+        
+        # 2. 找出热度上升的板块
+        for sector_name, data in today_data.items():
+            if sector_name in yesterday_data:
+                rank_change = yesterday_data[sector_name]['rank'] - data['rank']
+                if rank_change >= 3:  # 排名上升3名以上
+                    result['rising_sectors'].append({
+                        'name': sector_name,
+                        'rank': data['rank'],
+                        'rank_change': rank_change
+                    })
+        
+        # 3. 找出热度下降的板块
+        for sector_name, data in today_data.items():
+            if sector_name in yesterday_data:
+                rank_change = yesterday_data[sector_name]['rank'] - data['rank']
+                if rank_change <= -3:  # 排名下降3名以上
+                    result['declining_sectors'].append({
+                        'name': sector_name,
+                        'rank': data['rank'],
+                        'rank_change': rank_change
+                    })
+        
+        # 4. 找出持续强势板块（连续2天在TOP5）
+        if len(dates) >= 2:
+            today_top5 = set(list(today_data.keys())[:5])
+            yesterday_top5 = set(list(yesterday_data.keys())[:5])
+            result['persistent_sectors'] = list(today_top5 & yesterday_top5)
+        
+        # 5. 生成建议
+        if result['rising_sectors']:
+            rising_names = [s['name'] for s in result['rising_sectors'][:3]]
+            result['recommendation'] += f"热点上升: {', '.join(rising_names)}。"
+        
+        if result['persistent_sectors']:
+            result['recommendation'] += f"持续强势: {', '.join(result['persistent_sectors'][:3])}。"
+        
         if result['new_sectors']:
             result['recommendation'] += f"新热点: {', '.join(result['new_sectors'][:3])}。"
         
+        if not result['recommendation']:
+            result['recommendation'] = '板块格局稳定'
+        
+        self._save_history()
         return result
+    
+    def get_sector_trend(self, sector_name: str) -> str:
+        """
+        获取单个板块的趋势
+        
+        Returns:
+            str: 'rising' / 'declining' / 'stable' / 'unknown'
+        """
+        dates = sorted(self.history.keys(), reverse=True)[:3]
+        
+        if len(dates) < 2:
+            return 'unknown'
+        
+        ranks = []
+        for date in dates:
+            data = self.history.get(date, {})
+            if sector_name in data:
+                ranks.append(data[sector_name]['rank'])
+            else:
+                ranks.append(None)
+        
+        valid_ranks = [r for r in ranks if r is not None]
+        if len(valid_ranks) < 2:
+            return 'unknown'
+        
+        # 判断趋势
+        if valid_ranks[0] < valid_ranks[-1]:  # 排名变小 = 上升
+            return 'rising'
+        elif valid_ranks[0] > valid_ranks[-1]:  # 排名变大 = 下降
+            return 'declining'
+        else:
+            return 'stable'
 
 
-# ==================== 6. 竞价资金流向分析器 ====================
+# 导出模块
+__all__ = [
+    'UnlockRiskDetector',
+    'ReduceRiskDetector', 
+    'InvestorAnalyzer',
+    'EmotionCycleAnalyzer',
+    'SectorRotationAnalyzer',
+    'FAMOUS_INVESTORS',
+    'AuctionFundFlowAnalyzer',  # ★新增
+    'BacktestSystem'  # ★新增
+]
+
+
+# ==================== P4新增：竞价资金流向分析 ====================
 
 class AuctionFundFlowAnalyzer:
     """竞价资金流向分析器"""
     
     def __init__(self):
-        self.client = StockAPIClient()
+        self.api_url = API_BASE_URL
+        self.api_token = API_TOKEN
     
-    def analyze_auction_fund_flow(self, date: str = None) -> Dict:
+    def _make_request(self, endpoint, params=None, timeout=10):
+        """发送API请求"""
+        try:
+            url = f"{self.api_url}{endpoint}"
+            if params is None:
+                params = {}
+            params['token'] = self.api_token
+            
+            response = requests.get(url, params=params, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get('code') == 20000:
+                return data.get('data', {})
+            return None
+        except Exception as e:
+            print(f"API请求失败: {e}")
+            return None
+    
+    def get_tick_data(self, stock_code: str) -> List[Dict]:
+        """
+        获取竞价逐笔明细
+        
+        Args:
+            stock_code: 股票代码
+        
+        Returns:
+            list: 逐笔明细列表
+        """
+        # 使用逐笔明细接口
+        result = self._make_request('/v1/base/secondList', {
+            'code': stock_code,
+            'all': '1'  # 返回全部数据
+        })
+        
+        if result and isinstance(result, list):
+            return result
+        return []
+    
+    def analyze_fund_flow(self, stock_code: str) -> Dict:
         """
         分析竞价资金流向
         
+        Args:
+            stock_code: 股票代码
+        
         Returns:
-            {
-                'net_inflow_sectors': [],  # 净流入板块
-                'net_outflow_sectors': [], # 净流出板块
-                'hot_individuals': [],     # 热门个股
-                'summary': str
+            dict: {
+                'big_buy_amount': float,  # 大单买入金额
+                'big_sell_amount': float,  # 大单卖出金额
+                'big_net_buy': float,  # 大单净买入
+                'big_buy_ratio': float,  # 大单买入占比
+                'small_net_buy': float,  # 小单净买入
+                'fund_flow_score': float,  # 资金流向评分
+                'trend': str,  # 流入/流出/平衡
+                'tick_count': int  # 成交笔数
             }
         """
-        if date is None:
-            date = self.client.get_today_date()
-        
         result = {
-            'net_inflow_sectors': [],
-            'net_outflow_sectors': [],
-            'hot_individuals': [],
-            'summary': ''
+            'big_buy_amount': 0,
+            'big_sell_amount': 0,
+            'big_net_buy': 0,
+            'big_buy_ratio': 0,
+            'small_net_buy': 0,
+            'fund_flow_score': 0,
+            'trend': '未知',
+            'tick_count': 0,
+            'big_buy_count': 0,
+            'big_sell_count': 0
         }
         
         try:
-            # 获取竞价热点板块
-            auction_sectors = self.client.get_enhanced_auction_sectors()
+            tick_data = self.get_tick_data(stock_code)
             
-            if auction_sectors:
-                for s in auction_sectors[:10]:
-                    jjzf = float(s.get('jjzf', 0))
-                    if jjzf > 1:
-                        result['net_inflow_sectors'].append({
-                            'name': s.get('bkName', ''),
-                            'change': jjzf,
-                            'up_count': s.get('szjs', 0)
-                        })
-                    elif jjzf < -1:
-                        result['net_outflow_sectors'].append({
-                            'name': s.get('bkName', ''),
-                            'change': jjzf,
-                            'down_count': s.get('xdjs', 0)
-                        })
+            if not tick_data:
+                return result
             
-            # 获取竞价抢筹股
-            robbing = self.client.get_auction_robbing()
-            if robbing:
-                for r in robbing[:5]:
-                    result['hot_individuals'].append({
-                        'code': r.get('code', ''),
-                        'name': r.get('name', ''),
-                        'change': float(r.get('jjzf', 0))
-                    })
+            result['tick_count'] = len(tick_data)
             
-            # 生成摘要
-            if result['net_inflow_sectors']:
-                top_in = result['net_inflow_sectors'][0]['name']
-                result['summary'] = f"竞价资金主要流入{top_in}板块"
+            # 定义大单阈值（金额大于50万视为大单）
+            BIG_ORDER_THRESHOLD = 500000
             
-            return result
+            big_buy_amount = 0
+            big_sell_amount = 0
+            small_buy_amount = 0
+            small_sell_amount = 0
+            big_buy_count = 0
+            big_sell_count = 0
+            
+            for tick in tick_data:
+                try:
+                    # bsbz: 买卖标志 (1-买入, 2-卖出, 4-竞价)
+                    bsbz = tick.get('bsbz', '0')
+                    # 手数
+                    shoushu = tick.get('shoushu', '0')
+                    # 价格
+                    price = tick.get('price', '0')
+                    
+                    try:
+                        shoushu = int(shoushu)
+                        price = float(price)
+                    except:
+                        continue
+                    
+                    # 计算金额
+                    amount = shoushu * price * 100  # 手数×价格×100
+                    
+                    is_buy = bsbz in ['1', '2', '4']  # 竞价阶段买入
+                    
+                    if amount >= BIG_ORDER_THRESHOLD:
+                        if is_buy:
+                            big_buy_amount += amount
+                            big_buy_count += 1
+                        else:
+                            big_sell_amount += amount
+                            big_sell_count += 1
+                    else:
+                        if is_buy:
+                            small_buy_amount += amount
+                        else:
+                            small_sell_amount += amount
+                
+                except Exception:
+                    continue
+            
+            result['big_buy_amount'] = big_buy_amount
+            result['big_sell_amount'] = big_sell_amount
+            result['big_net_buy'] = big_buy_amount - big_sell_amount
+            result['big_buy_count'] = big_buy_count
+            result['big_sell_count'] = big_sell_count
+            
+            total_big = big_buy_amount + big_sell_amount
+            if total_big > 0:
+                result['big_buy_ratio'] = (big_buy_amount / total_big) * 100
+            
+            # 小单净买入
+            result['small_net_buy'] = small_buy_amount - small_sell_amount
+            
+            # 判断趋势
+            if result['big_net_buy'] > 0:
+                if result['big_net_buy'] > 10000000:  # 净买入超过1000万
+                    result['trend'] = '大额流入'
+                else:
+                    result['trend'] = '资金流入'
+            elif result['big_net_buy'] < 0:
+                if result['big_net_buy'] < -10000000:
+                    result['trend'] = '大额流出'
+                else:
+                    result['trend'] = '资金流出'
+            else:
+                result['trend'] = '资金平衡'
+            
+            # 计算评分
+            result['fund_flow_score'] = self._calc_fund_flow_score(result)
             
         except Exception as e:
-            return result
-
-
-# ==================== 7. 市场预测引擎（新增） ====================
-
-class MarketPredictionEngine:
-    """市场预测引擎"""
+            print(f"竞价资金流向分析失败: {e}")
+        
+        return result
     
-    def __init__(self):
-        self.emotion_analyzer = EmotionCycleAnalyzer()
-        self.sector_analyzer = SectorRotationAnalyzer()
-        self.fund_flow_analyzer = AuctionFundFlowAnalyzer()
-    
-    def predict(self, date: str = None) -> Dict:
+    def _calc_fund_flow_score(self, flow_data: Dict) -> float:
         """
-        综合市场预测
+        计算资金流向评分
         
-        Returns:
-            {
-                'market_trend': str,          # 市场趋势判断
-                'confidence': float,          # 预测置信度
-                'emotion_stage': str,         # 情绪阶段
-                'recommended_position': float,# 建议仓位
-                'hot_sectors': [],            # 推荐板块
-                'risk_sectors': [],           # 风险板块
-                'warnings': [],               # 风险提示
-                'opportunities': []           # 机会提示
-            }
+        评分逻辑：
+        - 大单净买入金额
+        - 大单买入占比
         """
-        if date is None:
-            date = datetime.now().strftime('%Y-%m-%d')
+        score = 0
         
-        # 1. 情绪分析
-        emotion = self.emotion_analyzer.analyze_emotion(date)
+        big_net_buy = flow_data.get('big_net_buy', 0)
+        big_buy_ratio = flow_data.get('big_buy_ratio', 0)
         
-        # 2. 板块轮动（需要历史数据）
-        sector_rotation = {'recommendation': ''}
-        
-        # 3. 资金流向
-        fund_flow = self.fund_flow_analyzer.analyze_auction_fund_flow(date)
-        
-        # 综合判断
-        emotion_score = emotion.get('emotion_score', 50)
-        
-        # 市场趋势判断
-        if emotion_score >= 70:
-            market_trend = '强势上涨'
-            confidence = 0.7
-        elif emotion_score >= 50:
-            market_trend = '震荡偏强'
-            confidence = 0.6
-        elif emotion_score >= 30:
-            market_trend = '震荡偏弱'
-            confidence = 0.5
+        # 大单净买入金额评分
+        if big_net_buy >= 50000000:  # 5000万以上
+            score += 10
+        elif big_net_buy >= 20000000:  # 2000万以上
+            score += 8
+        elif big_net_buy >= 10000000:  # 1000万以上
+            score += 6
+        elif big_net_buy >= 5000000:  # 500万以上
+            score += 4
+        elif big_net_buy >= 0:  # 小幅净买入
+            score += 2
+        elif big_net_buy >= -5000000:  # 小幅净卖出
+            score += 0
         else:
-            market_trend = '弱势调整'
-            confidence = 0.6
+            score -= 2  # 扣分
         
-        # 生成预警
-        warnings = []
-        opportunities = []
+        # 大单买入占比评分
+        if big_buy_ratio >= 70:
+            score += 5
+        elif big_buy_ratio >= 60:
+            score += 3
+        elif big_buy_ratio >= 50:
+            score += 1
+        elif big_buy_ratio >= 40:
+            score += 0
+        else:
+            score -= 2
         
-        if emotion.get('stage_name') == '退潮期':
-            warnings.append('市场进入退潮期，建议空仓观望')
-        elif emotion.get('stage_name') == '高潮期':
-            warnings.append('市场过热，注意回调风险')
-        elif emotion.get('stage_name') == '恢复初期':
-            opportunities.append('市场开始回暖，可轻仓试错')
-        elif emotion.get('stage_name') == '上升期':
-            opportunities.append('市场情绪良好，正常参与')
-        
-        # 板块机会
-        hot_sectors = [s['name'] for s in fund_flow.get('net_inflow_sectors', [])[:3]]
-        risk_sectors = [s['name'] for s in fund_flow.get('net_outflow_sectors', [])[:3]]
-        
-        return {
-            'date': date,
-            'market_trend': market_trend,
-            'confidence': confidence,
-            'emotion_stage': emotion.get('stage_name', ''),
-            'emotion_score': emotion_score,
-            'recommended_position': emotion.get('position_limit', 0.3),
-            'hot_sectors': hot_sectors,
-            'risk_sectors': risk_sectors,
-            'warnings': warnings,
-            'opportunities': opportunities,
-            'fund_flow_summary': fund_flow.get('summary', ''),
-            'sector_recommendation': sector_rotation.get('recommendation', '')
-        }
+        return max(score, 0)
 
 
-# ==================== 8. 综合风控评估引擎（新增） ====================
+# ==================== P4新增：回测验证系统 ====================
 
-class RiskAssessmentEngine:
-    """综合风控评估引擎"""
+class BacktestSystem:
+    """回测验证系统"""
     
-    def __init__(self):
-        self.unlock_detector = UnlockRiskDetector()
-        self.reduce_detector = ReduceRiskDetector()
-        self.emotion_analyzer = EmotionCycleAnalyzer()
+    def __init__(self, data_dir: str = "/mnt/workspace/working/data/T01"):
+        self.data_dir = data_dir
+        self.history_dir = os.path.join(data_dir, "history")
+        self._ensure_dirs()
     
-    def assess_stock_risk(self, stock: Dict, dragon_tiger: Dict = None) -> Dict:
+    def _ensure_dirs(self):
+        """确保目录存在"""
+        os.makedirs(self.history_dir, exist_ok=True)
+    
+    def load_selection_history(self, start_date: str = None, end_date: str = None) -> List[Dict]:
         """
-        评估个股风险
+        加载历史选股记录
         
         Args:
-            stock: 股票信息
-            dragon_tiger: 龙虎榜数据
+            start_date: 开始日期
+            end_date: 结束日期
         
         Returns:
-            {
-                'total_risk_score': float,    # 总风险分 0-100
-                'risk_level': str,            # 高/中/低
-                'risk_factors': [],           # 风险因子
-                'warnings': [],               # 风险提示
-                'recommendation': str         # 建议
-            }
+            list: 历史选股记录列表
         """
-        risk_factors = []
-        warnings = []
-        risk_score = 0
+        records = []
         
-        stock_code = stock.get('code', '')
-        stock_name = stock.get('name', '')
+        if not os.path.exists(self.history_dir):
+            return records
         
-        # 1. 解禁风险
-        unlock_risk = self.unlock_detector.check_unlock_risk(stock_name, stock_code)
-        if unlock_risk['has_risk']:
-            if unlock_risk['risk_level'] == '高':
-                risk_score += 30
-                warnings.append(f"解禁风险: {unlock_risk['detail']}")
-            elif unlock_risk['risk_level'] == '中':
-                risk_score += 15
-                warnings.append(f"解禁风险: {unlock_risk['detail']}")
-            risk_factors.append('解禁风险')
+        for filename in os.listdir(self.history_dir):
+            if not filename.startswith('selection_') or not filename.endswith('.json'):
+                continue
+            
+            file_date = filename.replace('selection_', '').replace('.json', '')
+            
+            # 日期过滤
+            if start_date and file_date < start_date:
+                continue
+            if end_date and file_date > end_date:
+                continue
+            
+            filepath = os.path.join(self.history_dir, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    data['file_date'] = file_date
+                    records.append(data)
+            except Exception as e:
+                print(f"加载文件失败 {filename}: {e}")
         
-        # 2. 减持风险
-        reduce_risk = self.reduce_detector.check_reduce_risk(stock_name, stock_code, dragon_tiger)
-        if reduce_risk['has_risk']:
-            if reduce_risk['risk_level'] == '高':
-                risk_score += 25
-                warnings.append(f"减持风险: {reduce_risk['detail']}")
-            elif reduce_risk['risk_level'] == '中':
-                risk_score += 10
-                warnings.append(f"减持风险: {reduce_risk['detail']}")
-            risk_factors.append('减持风险')
+        # 按日期排序
+        records.sort(key=lambda x: x.get('file_date', ''))
         
-        # 3. 炸板风险
-        bomb_num = int(stock.get('bombNum', 0))
-        if bomb_num >= 3:
-            risk_score += 20
-            warnings.append(f"多次炸板({bomb_num}次)，封板不牢")
-            risk_factors.append('炸板风险')
-        elif bomb_num >= 2:
-            risk_score += 10
-            warnings.append(f"炸板{bomb_num}次")
-        
-        # 4. 高位风险
-        lb_num = int(stock.get('lbNum', 1))
-        if lb_num >= 5:
-            risk_score += 25
-            warnings.append(f"高位板({lb_num}板)，追高风险大")
-            risk_factors.append('高位风险')
-        elif lb_num >= 4:
-            risk_score += 15
-            warnings.append(f"较高位置({lb_num}板)")
-        
-        # 5. 情绪风险
-        emotion = self.emotion_analyzer.analyze_emotion()
-        stage_name = emotion.get('stage_name', '')
-        if stage_name == '退潮期':
-            risk_score += 30
-            warnings.append("市场退潮期，系统性风险")
-            risk_factors.append('情绪风险')
-        elif stage_name == '高潮期':
-            risk_score += 15
-            warnings.append("市场过热，注意回调")
-        
-        # 确定风险等级
-        if risk_score >= 50:
-            risk_level = '高'
-            recommendation = '风险较高，建议谨慎或回避'
-        elif risk_score >= 25:
-            risk_level = '中'
-            recommendation = '存在风险，建议降低仓位'
-        else:
-            risk_level = '低'
-            recommendation = '风险可控'
-        
-        return {
-            'stock_code': stock_code,
-            'stock_name': stock_name,
-            'total_risk_score': min(100, risk_score),
-            'risk_level': risk_level,
-            'risk_factors': risk_factors,
-            'warnings': warnings,
-            'recommendation': recommendation
-        }
+        return records
     
-    def assess_market_risk(self) -> Dict:
+    def get_stock_return(self, stock_code: str, buy_date: str, sell_date: str) -> Optional[float]:
         """
-        评估市场整体风险
+        获取股票在指定期间的收益率
+        
+        Args:
+            stock_code: 股票代码
+            buy_date: 买入日期（T+1）
+            sell_date: 卖出日期（T+2）
         
         Returns:
-            {
-                'market_risk_level': str,
-                'position_limit': float,
-                'trading_allowed': bool,
-                'warnings': [],
-                'recommendation': str
-            }
+            float: 收益率（%），失败返回None
         """
-        emotion = self.emotion_analyzer.analyze_emotion()
-        stage_name = emotion.get('stage_name', '恢复中期')
-        position_limit = emotion.get('position_limit', 0.3)
+        try:
+            # 获取K线数据
+            from stockapi_client import StockAPIClient
+            client = StockAPIClient()
+            
+            kline = client.get_stock_kline(stock_code, buy_date, sell_date, cycle=100)
+            
+            if not kline or not isinstance(kline, list):
+                return None
+            
+            # 找到买入日的收盘价
+            buy_close = None
+            sell_close = None
+            
+            for item in kline:
+                date = item.get('time', '')
+                if date == buy_date:
+                    buy_close = float(item.get('close', 0))
+                elif date == sell_date:
+                    sell_close = float(item.get('close', 0))
+            
+            if buy_close and sell_close and buy_close > 0:
+                return ((sell_close - buy_close) / buy_close) * 100
+            
+        except Exception as e:
+            print(f"获取收益率失败 {stock_code}: {e}")
         
-        warnings = []
-        if stage_name == '退潮期':
-            trading_allowed = False
-            warnings.append('市场退潮，暂停交易')
-            recommendation = '建议空仓观望'
-        elif stage_name == '高潮期':
-            trading_allowed = True
-            position_limit = min(position_limit, 0.3)
-            warnings.append('市场过热，降低仓位')
-            recommendation = '建议逐步减仓'
-        elif stage_name == '恢复初期':
-            trading_allowed = True
-            warnings.append('市场刚回暖，轻仓试错')
-            recommendation = '建议轻仓操作'
-        else:
-            trading_allowed = True
-            recommendation = '正常参与'
+        return None
+    
+    def run_backtest(self, start_date: str = None, end_date: str = None, 
+                     top_n: int = 3) -> Dict:
+        """
+        运行回测
         
-        return {
-            'stage_name': stage_name,
-            'market_risk_level': stage_name,
-            'position_limit': position_limit,
-            'trading_allowed': trading_allowed,
-            'warnings': warnings,
-            'recommendation': recommendation
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            top_n: 只统计前N名
+        
+        Returns:
+            dict: 回测结果
+        """
+        print("=" * 60)
+        print("T01龙头战法 - 回测验证系统")
+        print("=" * 60)
+        
+        result = {
+            'start_date': start_date,
+            'end_date': end_date,
+            'total_days': 0,
+            'total_trades': 0,
+            'win_trades': 0,
+            'lose_trades': 0,
+            'win_rate': 0,
+            'avg_return': 0,
+            'max_return': 0,
+            'min_return': 0,
+            'total_return': 0,
+            'max_drawdown': 0,
+            'trades': [],
+            'daily_returns': []
         }
-
-
-# ==================== 测试入口 ====================
-
-def main():
-    """测试P4模块"""
-    print("=" * 70)
-    print("T01龙头战法 - P4深度分析模块测试")
-    print("=" * 70)
+        
+        # 加载历史选股
+        print(f"\n加载历史选股记录...")
+        records = self.load_selection_history(start_date, end_date)
+        print(f"找到 {len(records)} 条记录")
+        
+        if not records:
+            return result
+        
+        result['total_days'] = len(records)
+        
+        all_returns = []
+        cumulative_return = 0
+        max_cumulative = 0
+        
+        for record in records:
+            t_date = record.get('file_date', '')
+            stocks = record.get('stocks', record.get('top_stocks', []))
+            
+            if not stocks:
+                continue
+            
+            # T+1买入，T+2卖出
+            t_date_obj = datetime.strptime(t_date, '%Y-%m-%d')
+            buy_date = (t_date_obj + timedelta(days=1)).strftime('%Y-%m-%d')
+            sell_date = (t_date_obj + timedelta(days=2)).strftime('%Y-%m-%d')
+            
+            print(f"\n处理 {t_date} 的选股...")
+            
+            # 只统计前N名
+            for i, stock in enumerate(stocks[:top_n]):
+                stock_code = stock.get('code', '')
+                stock_name = stock.get('name', '')
+                score = stock.get('score', stock.get('raw_score', 0))
+                
+                if not stock_code:
+                    continue
+                
+                print(f"  {i+1}. {stock_name}({stock_code}) - 评分:{score:.2f}")
+                
+                # 获取收益率
+                ret = self.get_stock_return(stock_code, buy_date, sell_date)
+                
+                if ret is not None:
+                    result['total_trades'] += 1
+                    all_returns.append(ret)
+                    
+                    if ret > 0:
+                        result['win_trades'] += 1
+                    else:
+                        result['lose_trades'] += 1
+                    
+                    # 记录交易
+                    result['trades'].append({
+                        'date': t_date,
+                        'code': stock_code,
+                        'name': stock_name,
+                        'score': score,
+                        'rank': i + 1,
+                        'return': round(ret, 2)
+                    })
+                    
+                    print(f"     收益率: {ret:.2f}%")
+                else:
+                    print(f"     无法获取收益率")
+        
+        # 计算统计指标
+        if all_returns:
+            result['win_rate'] = round((result['win_trades'] / len(all_returns)) * 100, 2)
+            result['avg_return'] = round(sum(all_returns) / len(all_returns), 2)
+            result['max_return'] = round(max(all_returns), 2)
+            result['min_return'] = round(min(all_returns), 2)
+            result['total_return'] = round(sum(all_returns), 2)
+            
+            # 计算最大回撤
+            cumulative = 0
+            max_cum = 0
+            max_drawdown = 0
+            for ret in all_returns:
+                cumulative += ret
+                if cumulative > max_cum:
+                    max_cum = cumulative
+                drawdown = max_cum - cumulative
+                if drawdown > max_drawdown:
+                    max_drawdown = drawdown
+            result['max_drawdown'] = round(max_drawdown, 2)
+        
+        return result
     
-    # 测试情绪分析
-    print("\n【测试1】情绪周期分析")
-    emotion_analyzer = EmotionCycleAnalyzer()
-    emotion = emotion_analyzer.analyze_emotion()
-    print(f"  阶段: {emotion['stage_name']}")
-    print(f"  得分: {emotion['emotion_score']}")
-    print(f"  仓位: {emotion['position_limit']*100}%")
+    def generate_report(self, backtest_result: Dict) -> str:
+        """
+        生成回测报告
+        
+        Args:
+            backtest_result: 回测结果
+        
+        Returns:
+            str: 报告文本
+        """
+        report = []
+        report.append("=" * 60)
+        report.append("T01龙头战法 - 回测验证报告")
+        report.append("=" * 60)
+        report.append("")
+        report.append(f"回测区间: {backtest_result.get('start_date', '未知')} ~ {backtest_result.get('end_date', '未知')}")
+        report.append(f"回测天数: {backtest_result.get('total_days', 0)} 天")
+        report.append("")
+        report.append("-" * 60)
+        report.append("【交易统计】")
+        report.append(f"  总交易次数: {backtest_result.get('total_trades', 0)} 次")
+        report.append(f"  盈利次数: {backtest_result.get('win_trades', 0)} 次")
+        report.append(f"  亏损次数: {backtest_result.get('lose_trades', 0)} 次")
+        report.append(f"  胜率: {backtest_result.get('win_rate', 0):.2f}%")
+        report.append("")
+        report.append("-" * 60)
+        report.append("【收益分析】")
+        report.append(f"  平均收益率: {backtest_result.get('avg_return', 0):.2f}%")
+        report.append(f"  最大单次收益: {backtest_result.get('max_return', 0):.2f}%")
+        report.append(f"  最大单次亏损: {backtest_result.get('min_return', 0):.2f}%")
+        report.append(f"  累计收益: {backtest_result.get('total_return', 0):.2f}%")
+        report.append(f"  最大回撤: {backtest_result.get('max_drawdown', 0):.2f}%")
+        report.append("")
+        report.append("-" * 60)
+        report.append("【交易明细】")
+        
+        trades = backtest_result.get('trades', [])
+        for trade in trades[:20]:  # 只显示前20条
+            win_lose = '✅' if trade['return'] > 0 else '❌'
+            report.append(f"  {trade['date']} {trade['name']}({trade['code']}) {win_lose} {trade['return']:.2f}%")
+        
+        if len(trades) > 20:
+            report.append(f"  ... 还有 {len(trades) - 20} 条记录")
+        
+        report.append("")
+        report.append("=" * 60)
+        
+        return "\n".join(report)
     
-    # 测试市场预测
-    print("\n【测试2】市场预测")
-    predictor = MarketPredictionEngine()
-    prediction = predictor.predict()
-    print(f"  趋势: {prediction['market_trend']}")
-    print(f"  置信度: {prediction['confidence']}")
-    print(f"  热点板块: {prediction['hot_sectors']}")
-    print(f"  风险提示: {prediction['warnings']}")
-    
-    # 测试风控评估
-    print("\n【测试3】风控评估")
-    risk_engine = RiskAssessmentEngine()
-    market_risk = risk_engine.assess_market_risk()
-    print(f"  市场风险: {market_risk['market_risk_level']}")
-    print(f"  允许交易: {market_risk['trading_allowed']}")
-    print(f"  建议仓位: {market_risk['position_limit']*100}%")
-    
-    print("\n" + "=" * 70)
-    print("测试完成!")
-    print("=" * 70)
-
-
-if __name__ == "__main__":
-    main()
+    def save_backtest_result(self, backtest_result: Dict, filename: str = None):
+        """保存回测结果"""
+        if not filename:
+            filename = f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        
+        filepath = os.path.join(self.data_dir, filename)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(backtest_result, f, ensure_ascii=False, indent=2)
+        
+        print(f"\n回测结果已保存: {filepath}")

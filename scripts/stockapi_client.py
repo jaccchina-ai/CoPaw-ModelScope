@@ -248,88 +248,46 @@ class StockAPIClient:
 
         return []
     
-    def get_enhanced_auction_sectors(self, trade_date=None):
+    def get_enhanced_auction_sectors(self):
         """
         获取增强版热点板块竞价数据
         
         更新时间：交易日上午9:26分
         
-        Args:
-            trade_date: 交易日期（格式：YYYY-MM-DD），默认今天
-        
         Returns:
             list: 热点板块竞价数据，包含：
-                - bkCode: 板块代码
-                - bkName: 板块名称
-                - jjzf: 竞价涨幅
-                - szjs: 上涨家数
-                - xdjs: 下跌家数
+                - 板块名称
+                - 竞价涨幅
+                - 竞价金额
+                - 板块强度等
         """
-        if not trade_date:
-            trade_date = self.get_today_date()
-        
-        params = {"tradeDate": trade_date}
-        result = self._make_request("/v1/base/bkjjzq", params)
+        result = self._make_request("/v1/base/bkjjzq")
 
         if result is not None:
             return result
 
         return []
     
-    def get_enhanced_auction_stocks(self, trade_date=None, bk_code=None):
+    def get_enhanced_auction_stocks(self):
         """
         获取增强版热点板块竞价所属个股
         
         更新时间：交易日上午9:26分
         
-        Args:
-            trade_date: 交易日期（格式：YYYY-MM-DD），默认今天
-            bk_code: 板块代码（可选，不传则获取所有热点板块的个股）
-        
         Returns:
             list: 竞价热点个股数据，包含：
-                - code: 股票代码
-                - name: 股票名称
-                - jjzf: 竞价涨幅
-                - bkCode: 所属板块代码
-                - bkName: 所属板块名称
+                - 股票代码
+                - 股票名称
+                - 竞价涨幅
+                - 竞价金额
+                - 所属板块等
         """
-        if not trade_date:
-            trade_date = self.get_today_date()
-        
-        if bk_code:
-            # 获取指定板块的竞价个股
-            params = {"tradeDate": trade_date, "bkCode": bk_code}
-            result = self._make_request("/v1/base/zqbkCodeList", params)
-            if result:
-                return result
-            return []
-        
-        # 获取所有热点板块的竞价个股（遍历前10个板块）
-        all_stocks = []
-        sectors = self.get_enhanced_auction_sectors(trade_date)
-        
-        if not sectors:
-            return []
-        
-        seen_codes = set()  # 去重
-        
-        for sector in sectors[:10]:  # 只取前10个热门板块
-            sector_bk_code = sector.get('bkCode')
-            if not sector_bk_code:
-                continue
-            
-            params = {"tradeDate": trade_date, "bkCode": sector_bk_code}
-            stocks = self._make_request("/v1/base/zqbkCodeList", params)
-            
-            if stocks:
-                for stock in stocks:
-                    code = stock.get('code', '')
-                    if code and code not in seen_codes:
-                        seen_codes.add(code)
-                        all_stocks.append(stock)
-        
-        return all_stocks
+        result = self._make_request("/v1/base/zqbkCodeList")
+
+        if result is not None:
+            return result
+
+        return []
 
     def get_stock_kline(self, stock_code, start_date, end_date, cycle=100):
         """
@@ -757,11 +715,41 @@ class StockAPIClient:
         else:
             return []
 
+
+# 测试函数
+def main():
+    """测试API客户端"""
+    print("测试股票API客户端...")
+
+    client = StockAPIClient()
+
+    # 测试交易日查询
+    today = client.get_today_date()
+    print(f"\n今天 ({today}) 是否为交易日: {client.get_trading_day(today)}")
+
+    # 测试涨停股池（使用测试日期）
+    test_date = "2024-02-02"
+    print(f"\n获取 {test_date} 的涨停股...")
+    limit_up_stocks = client.get_limit_up_stocks(test_date)
+
+    if limit_up_stocks:
+        print(f"获取到 {len(limit_up_stocks)} 只涨停股票")
+
+        # 显示前3只
+        for i, stock in enumerate(limit_up_stocks[:3], 1):
+            print(f"  {i}. {stock.get('name')}({stock.get('code')}) - "
+                  f"涨跌幅: {stock.get('changeRatio')}% - "
+                  f"首次封板: {stock.get('firstCeilingTime')}")
+    else:
+        print("未获取到涨停股数据")
+
+
+
     # ==================== 竞价抢筹接口 ====================
     
     def get_auction_robbing(self, trade_date, period=0, type=1):
         """
-        获取竞价抢筹数据
+        获取竞价抢筹数据（P1优化新增）
         
         更新时间：交易日9:26（早盘）/ 15:10（尾盘）
         
@@ -803,6 +791,38 @@ class StockAPIClient:
         
         return []
     
+    def get_auction_sectors_enhanced(self, start_date, end_date, type=1):
+        """
+        获取热点板块竞价数据
+        
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            type: 类型
+                - 0: 看空
+                - 1: 看多
+        
+        Returns:
+            list: 竞价板块数据
+        """
+        params = {
+            "startDate": start_date,
+            "endDate": end_date,
+            "type": str(type)
+        }
+        
+        result = self._make_request("/v1/base/bkjj", params)
+        
+        if result is not None:
+            if isinstance(result, list):
+                return result
+            elif isinstance(result, dict):
+                data = result.get('data', result)
+                if isinstance(data, list):
+                    return data
+        
+        return []
+    
     def get_stock_in_auction_robbing(self, stock_code, trade_date, period=0):
         """
         检查股票是否在竞价抢筹榜中
@@ -815,11 +835,13 @@ class StockAPIClient:
         Returns:
             dict: 抢筹数据，如果不在榜单返回None
         """
+        # 获取所有类型的抢筹数据
         for type_id in [1, 2, 3, 4]:
             robbing_data = self.get_auction_robbing(trade_date, period, type_id)
             
             for item in robbing_data:
                 code = item.get('code', '')
+                # 去掉后缀
                 if '.' in code:
                     code = code.split('.')[0]
                 
@@ -827,36 +849,3 @@ class StockAPIClient:
                     return item
         
         return None
-
-
-# 测试函数
-def main():
-    """测试API客户端"""
-    print("测试股票API客户端...")
-
-    client = StockAPIClient()
-
-    # 测试交易日查询
-    today = client.get_today_date()
-    print(f"\n今天 ({today}) 是否为交易日: {client.get_trading_day(today)}")
-
-    # 测试涨停股池（使用测试日期）
-    test_date = "2024-02-02"
-    print(f"\n获取 {test_date} 的涨停股...")
-    limit_up_stocks = client.get_limit_up_stocks(test_date)
-
-    if limit_up_stocks:
-        print(f"获取到 {len(limit_up_stocks)} 只涨停股票")
-
-        # 显示前3只
-        for i, stock in enumerate(limit_up_stocks[:3], 1):
-            print(f"  {i}. {stock.get('name')}({stock.get('code')}) - "
-                  f"涨跌幅: {stock.get('changeRatio')}% - "
-                  f"首次封板: {stock.get('firstCeilingTime')}")
-    else:
-        print("未获取到涨停股数据")
-
-
-if __name__ == "__main__":
-    main()
-

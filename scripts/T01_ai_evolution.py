@@ -120,50 +120,21 @@ class AIEvolution:
             print("  盈利或亏损数据不完整，无法分析")
             return {}
         
-        # ★自动识别所有指标（从第一笔有metrics的交易中提取）
-        features = [('t_score', '总评分', None)]
-        
-        # 自动收集所有指标字段
-        all_metrics_keys = set()
-        for t in trades:
-            if t.get('metrics'):
-                all_metrics_keys.update(t['metrics'].keys())
-        
-        # 过滤掉非数值字段和列表字段
-        skip_keys = {'first_ceiling_time', 'hot_sector_name', 'plate_reason', 'plate_reason_type', 
-                     'plate_reason_keywords', 'news_list', 'famous_investors', 'investor_analysis',
-                     'investor_recommendation', 'news_sentiment', 'stock_name'}
-        
-        for key in sorted(all_metrics_keys):
-            if key not in skip_keys:
-                # 自动生成中文名
-                name = key.replace('_', ' ').replace('score', '评分').replace('num', '数').title()
-                features.append((key, name, 'metrics'))
+        # 分析各评分维度的重要性
+        features = [
+            ('t_score', '总评分'),
+            # 可以扩展更多特征
+        ]
         
         feature_importance = {}
         
-        for feature_key, feature_name, sub_key in features:
-            # 提取特征值
-            if sub_key == 'metrics':
-                win_vals = [t.get('metrics', {}).get(feature_key, 0) for t in win_trades if t.get('metrics')]
-                lose_vals = [t.get('metrics', {}).get(feature_key, 0) for t in lose_trades if t.get('metrics')]
-            elif sub_key:
-                win_vals = [t.get(sub_key, {}).get(feature_key, 0) for t in win_trades]
-                lose_vals = [t.get(sub_key, {}).get(feature_key, 0) for t in lose_trades]
-            else:
-                win_vals = [t.get(feature_key, 0) for t in win_trades]
-                lose_vals = [t.get(feature_key, 0) for t in lose_trades]
+        for feature_key, feature_name in features:
+            win_avg = np.mean([t.get(feature_key, 0) for t in win_trades])
+            lose_avg = np.mean([t.get(feature_key, 0) for t in lose_trades])
             
-            if not win_vals or not lose_vals:
-                continue
-            
-            win_avg = np.mean(win_vals)
-            lose_avg = np.mean(lose_vals)
-            
-            # 计算差异度
+            # 计算差异度（盈利组高则正相关，亏损组高则负相关）
             diff = win_avg - lose_avg
-            max_avg = max(abs(win_avg), abs(lose_avg), 0.01)
-            importance = abs(diff) / max_avg
+            importance = abs(diff) / max(win_avg, lose_avg, 0.01)
             
             feature_importance[feature_key] = {
                 'name': feature_name,
@@ -174,12 +145,9 @@ class AIEvolution:
                 'direction': 'positive' if diff > 0 else 'negative'
             }
             
-            # 只打印有意义的差异
-            if importance > 0.05:
-                print(f"\n  特征: {feature_name}")
-                print(f"    盈利组平均: {win_avg:.2f}")
-                print(f"    亏损组平均: {lose_avg:.2f}")
-                print(f"    差异度: {importance:.2%} ({'正相关' if diff > 0 else '负相关'})")
+            print(f"\n  特征: {feature_name}")
+            print(f"    盈利组平均: {win_avg:.2f}")
+            print(f"    亏损组平均: {lose_avg:.2f}")
             print(f"    差异度: {diff:.2f}")
             print(f"    重要性: {importance:.4f}")
             print(f"    方向: {'正相关' if diff > 0 else '负相关'}")
