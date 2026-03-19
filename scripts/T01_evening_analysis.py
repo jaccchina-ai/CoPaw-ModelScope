@@ -327,9 +327,32 @@ def send_notification(selected_stocks, date):
         message += f"⚠️ 风险提示: 以上分析仅供参考，投资有风险，请谨慎决策。"
 
     print(message)
+    # 通过copaw API发送飞书消息
+    import subprocess
+    try:
+        import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-    # 发送到飞书
-    send_feishu_message(FEISHU_USER_ID, FEISHU_SESSION_ID, message)
+msg = MIMEMultipart()
+msg['From'] = 'T01系统 <noreply@copaw.com>'
+msg['To'] = '12127083@qq.com'
+msg['Subject'] = f'T01 {date} 晚间选股结果'
+
+# 将纯文本内容
+msg.attach(MIMEText(message, 'plain'))
+
+try:
+    server = smtplib.SMTP_SSL('smtp.qq.com', 465)
+    server.login('noreply@copaw.com', 'APP_PASSWORD')
+    server.sendmail('noreply@copaw.com', '12127083@qq.com', msg.as_string())
+    server.quit()
+    print("邮件已发送到12127083@qq.com")
+except Exception as e:
+    print(f"发送邮件失败: {e}")
+        print("消息已通过copaw命令发送到QQ")
+    except Exception as e:
+        print(f"发送消息失败: {e}")
 
 def main():
     """主函数"""

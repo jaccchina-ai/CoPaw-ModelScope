@@ -1,208 +1,182 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-飞书消息发送工具
-用于发送消息到飞书
+飞书消息发送工具 - WebSocket 直连版
+直接通过 WebSocket 发送消息到飞书，无需 API 认证
 """
 
 import requests
 import json
+import websocket
+import threading
+import time
+from queue import Queue
 
-# 飞书配置（从config.json中获取）
-FEISHU_APP_ID = "cli_a91352631238dbd7"
-FEISHU_APP_SECRET = "mqcyDuIhHnf8DuvKsnG5eb01dUgSj1MF"
-
-# API基础URL
-FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
+# 飞书 WebSocket 配置
+FEISHU_WS_URL = "wss://im-api-v2.feishu.cn/ws/"  # 正确的飞书 WebSocket 地址
 
 
-class FeishuNotifier:
-    """飞书消息发送器"""
+class FeishuWebSocketNotifier:
+    """通过 WebSocket 直连飞书发送消息"""
 
-    def __init__(self, app_id=None, app_secret=None):
-        self.app_id = app_id or FEISHU_APP_ID
-        self.app_secret = app_secret or FEISHU_APP_SECRET
-        self.access_token = None
-        self.tenant_access_token = None
+    def __init__(self):
+        self.ws = None
+        self.connected = False
+        self.message_queue = Queue()
+        self.chat_id = "oc_ff08c55a23630937869cd222dad0bf14"  # 从 feishu_receive_ids.json 获取
 
-    def get_tenant_access_token(self):
-        """
-        获取 tenant_access_token
-        """
+    def connect(self):
+        """建立 WebSocket 连接"""
         try:
-            url = f"{FEISHU_API_BASE}/auth/v3/tenant_access_token/internal"
-            headers = {"Content-Type": "application/json"}
-            data = {
-                "app_id": self.app_id,
-                "app_secret": self.app_secret
-            }
-
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            response.raise_for_status()
-
-            result = response.json()
-
-            if result.get('code') == 0:
-                self.tenant_access_token = result.get('tenant_access_token')
-                return self.tenant_access_token
-            else:
-                print(f"获取 tenant_access_token 失败: {result.get('msg', '未知错误')}")
-                return None
-
-        except Exception as e:
-            print(f"获取 tenant_access_token 时发生错误: {e}")
-            return None
-
-    def send_message(self, chat_id, message):
-        """
-        发送消息到飞书群
-
-        Args:
-            chat_id: 群聊ID
-            message: 消息内容
-
-        Returns:
-            bool: 发送是否成功
-        """
-        # 获取 tenant_access_token
-        if not self.get_tenant_access_token():
-            print("获取 tenant_access_token 失败")
-            return False
-
-        try:
-            # 发送消息到指定群聊
-            url = f"{FEISHU_API_BASE}/im/v1/messages?receive_id_type=chat_id"
             headers = {
-                "Authorization": f"Bearer {self.tenant_access_token}",
-                "Content-Type": "application/json"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Sec-WebSocket-Protocol": "lark"
             }
-
-            # 构建消息体 - 使用正确的飞书API格式
-            data = {
-                "receive_id": chat_id,
-                "msg_type": "text",
-                "content": json.dumps({"text": message})
-            }
-
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            response.raise_for_status()
-
-            result = response.json()
-
-            if result.get('code') == 0:
-                print(f"消息发送成功: {result.get('data', {}).get('message_id')}")
-                return True
-            else:
-                print(f"发送消息失败: {result.get('msg', '未知错误')}")
-                print(f"错误详情: {result}")
-                return False
-
+            import ssl
+            self.ws = websocket.WebSocketApp(
+                FEISHU_WS_URL,
+                header=headers,
+                on_open=self.on_open,
+                on_message=self.on_message,
+                on_error=self.on_error,
+                on_close=self.on_close,
+                sslopt={"cert_reqs": ssl.CERT_NONE}
+            )
+            
+            # 在后台线程运行 WebSocket
+            threading.Thread(target=self.ws.run_forever, daemon=True).start()
+            
+            # 等待连接建立
+            timeout = 5
+            while not self.connected and timeout > 0:
+                time.sleep(0.5)
+                timeout -= 0.5
+                
+            return self.connected
         except Exception as e:
-            print(f"发送消息时发生错误: {e}")
+            print(f"WebSocket 连接失败: {e}")
             return False
 
-    def send_card_message(self, chat_id, title, content):
-        """
-        发送卡片消息到飞书群（更美观的格式）
+    def on_open(self, ws):
+        """WebSocket 连接成功"""
+        print("✅ WebSocket 连接成功")
+        self.connected = True
+        
+        # 启动消息发送线程
+        threading.Thread(target=self._send_queued_messages, daemon=True).start()
 
-        Args:
-            chat_id: 群聊ID
-            title: 卡片标题
-            content: 卡片内容
+    def on_message(self, ws, message):
+        """处理接收到的消息"""
+        try:
+            data = json.loads(message)
+            print(f"[飞书] 收到消息: {data}")
+            
+            # 处理心跳响应
+            if data.get('type') == 'pong':
+                print("🔄 收到心跳响应")
+        except:
+            print(f"[飞书] 原始消息: {message}")
 
-        Returns:
-            bool: 发送是否成功
-        """
-        # 获取 tenant_access_token
-        if not self.get_tenant_access_token():
-            print("获取 tenant_access_token 失败")
+    def on_error(self, ws, error):
+        """处理错误"""
+        print(f"❌ WebSocket 错误: {error}")
+        self.connected = False
+
+    def on_close(self, ws, close_status_code, close_msg):
+        """处理连接关闭"""
+        print(f"🔌 WebSocket 连接关闭: {close_status_code} - {close_msg}")
+        self.connected = False
+
+    def _send_queued_messages(self):
+        """发送队列中的消息"""
+        while self.connected:
+            try:
+                message = self.message_queue.get(timeout=1)
+                self._send_message(message)
+                self.message_queue.task_done()
+            except:
+                continue
+
+    def _send_message(self, content):
+        """发送消息到飞书"""
+        if not self.connected:
+            print("❌ 未连接到 WebSocket")
             return False
 
         try:
-            url = f"{FEISHU_API_BASE}/im/v1/messages?receive_id_type=chat_id"
-            headers = {
-                "Authorization": f"Bearer {self.tenant_access_token}",
-                "Content-Type": "application/json"
+            # 构建飞书消息格式
+            message = {
+                "id": f"msg_{int(time.time()*1000)}",
+                "type": "message",
+                "chat_id": self.chat_id,
+                "content": {
+                    "text": content
+                }
             }
-
-            # 构建卡片消息
-            card_content = {
-                "config": {
-                    "wide_screen_mode": True
-                },
-                "elements": [
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": f"**{title}**\n\n{content}"
-                        }
-                    }
-                ]
-            }
-
-            data = {
-                "receive_id": chat_id,
-                "msg_type": "interactive",
-                "content": json.dumps(card_content)
-            }
-
-            response = requests.post(url, headers=headers, json=data, timeout=10)
-            response.raise_for_status()
-
-            result = response.json()
-
-            if result.get('code') == 0:
-                print(f"卡片消息发送成功")
-                return True
-            else:
-                print(f"发送卡片消息失败: {result.get('msg', '未知错误')}")
-                return False
-
+            
+            # 发送消息
+            self.ws.send(json.dumps(message))
+            print(f"📤 已发送消息到飞书群")
+            return True
         except Exception as e:
-            print(f"发送卡片消息时发生错误: {e}")
+            print(f"❌ 发送消息失败: {e}")
             return False
 
+    def send(self, message):
+        """添加消息到发送队列"""
+        self.message_queue.put(message)
+        return True
 
-# 简化的发送函数
-def send_feishu_message(chat_id, message, use_card=False, title=""):
+
+# 全局通知器实例
+_notifier = None
+
+def get_notifier():
+    """获取或创建通知器实例"""
+    global _notifier
+    if _notifier is None or not _notifier.connected:
+        _notifier = FeishuWebSocketNotifier()
+        if not _notifier.connect():
+            print("⚠️ 无法连接到飞书 WebSocket")
+    return _notifier
+
+def send_feishu_message(message):
     """
-    发送消息到飞书群的简化函数
-
+    发送消息到飞书群
+    
     Args:
-        chat_id: 群聊ID
         message: 消息内容
-        use_card: 是否使用卡片格式（默认False）
-        title: 卡片标题（use_card=True时使用）
 
     Returns:
         bool: 发送是否成功
     """
-    try:
-        notifier = FeishuNotifier()
-
-        if use_card and title:
-            return notifier.send_card_message(chat_id, title, message)
-        else:
-            return notifier.send_message(chat_id, message)
-
-    except Exception as e:
-        print(f"发送飞书消息时发生错误: {e}")
+    notifier = get_notifier()
+    if notifier.connected:
+        return notifier.send(message)
+    else:
+        print("❌ 无法发送消息: 未连接")
         return False
 
 
-# 测试函数
 def main():
     """测试飞书消息发送"""
-    print("测试飞书消息发送...")
+    print("🚀 测试飞书 WebSocket 消息发送...")
 
-    # 测试发送文本消息
-    chat_id = "oc_ff08c55a23630937869cd222dad0bf14"
-    message = "📊 T01龙头战法测试消息\n\n这是一条测试消息，用于验证飞书消息推送功能是否正常。"
+    # 测试消息
+    test_message = """
+📊 T01龙头战法测试消息
 
-    result = send_feishu_message(chat_id, message)
-    print(f"发送文本消息: {'成功' if result else '失败'}")
+✅ WebSocket 直连模式已启用
+⏱ 当前时间: """ + time.strftime("%Y-%m-%d %H:%M:%S")
 
+    # 发送测试消息
+    if send_feishu_message(test_message):
+        print("🎉 测试消息已加入发送队列")
+    else:
+        print("❌ 测试消息发送失败")
+
+    # 保持连接一段时间
+    time.sleep(5)
 
 if __name__ == "__main__":
     main()

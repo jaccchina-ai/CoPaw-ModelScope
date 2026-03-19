@@ -17,6 +17,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import requests
+from stockapi_client import StockAPIClient
 
 # 尝试导入搜索模块
 try:
@@ -28,6 +29,9 @@ except ImportError:
 # API配置
 API_BASE_URL = "https://www.stockapi.com.cn"
 API_TOKEN = "516f4946db85f3f172e8ed29c6ad32f26148c58a38b33c74"
+
+# 数据路径
+DATA_BASE_DIR = "/mnt/workspace/working/data/T01"
 
 # ==================== 游资画像数据库 ====================
 # 知名游资席位及其风格特征
@@ -592,27 +596,55 @@ class EmotionCycleAnalyzer:
         return result
 
 
+    def analyze_emotion(self, date: str = None) -> Dict:
+        """
+        分析情绪周期
+        
+        Returns:
+            {
+                'stage_name': str,      # 阶段名称
+                'position_limit': float, # 建议仓位上限
+                'description': str,     # 阶段描述
+                'emotion_score': int    # 情绪评分
+            }
+        """
+        # 临时实现（后续应替换为真实逻辑）
+        return {
+            'stage_name': '恢复中期',
+            'position_limit': 0.3,
+            'description': '市场情绪回暖，可适度参与',
+            'emotion_score': 41
+        }
+
 class SectorRotationAnalyzer:
     """板块轮动预测分析器"""
     
     def __init__(self):
-        self.history_file = "/mnt/workspace/working/data/T01/sector_history.json"
+        self.client = StockAPIClient()
         self.history = self._load_history()
     
     def _load_history(self) -> Dict:
-        """加载历史板块数据"""
-        if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return {}
+        """加载板块历史"""
+        history_file = os.path.join(DATA_BASE_DIR, 'sector_history.json')
+        if os.path.exists(history_file):
+            with open(history_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # 适配两种格式：新格式是按日期组织的，旧格式是 {"records": [...]}
+                if 'records' in data:
+                    # 转换旧格式为新格式
+                    new_data = {}
+                    for record in data['records']:
+                        date_str = record.get('date', '')
+                        if date_str and record.get('sectors'):
+                            new_data[date_str] = record['sectors']
+                    return new_data
+                return data
         return {}
     
     def _save_history(self):
         """保存历史板块数据"""
-        os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
-        with open(self.history_file, 'w', encoding='utf-8') as f:
+        os.makedirs(os.path.dirname(os.path.join(DATA_BASE_DIR, 'sector_history.json')), exist_ok=True)
+        with open(os.path.join(DATA_BASE_DIR, 'sector_history.json'), 'w', encoding='utf-8') as f:
             json.dump(self.history, f, ensure_ascii=False, indent=2)
     
     def update_and_analyze(self, date: str, hot_sectors: List[Dict]) -> Dict:
@@ -624,13 +656,7 @@ class SectorRotationAnalyzer:
             hot_sectors: 当前热点板块列表
         
         Returns:
-            dict: {
-                'rising_sectors': list,  # 热度上升板块
-                'declining_sectors': list,  # 热度下降板块
-                'new_sectors': list,  # 新进TOP10板块
-                'persistent_sectors': list,  # 持续强势板块
-                'recommendation': str
-            }
+            dict: 分析结果
         """
         result = {
             'rising_sectors': [],
@@ -646,11 +672,13 @@ class SectorRotationAnalyzer:
         # 保存当前数据
         current_data = {}
         for i, sector in enumerate(hot_sectors[:15]):
-            current_data[sector.get('bkName', '')] = {
-                'rank': i + 1,
-                'strength': sector.get('qiangdu', 0),
-                'date': date
-            }
+            sector_name = sector.get('bkName', '')
+            if sector_name:
+                current_data[sector_name] = {
+                    'rank': i + 1,
+                    'strength': sector.get('qiangdu', 0),
+                    'date': date
+                }
         
         self.history[date] = current_data
         
@@ -672,7 +700,7 @@ class SectorRotationAnalyzer:
         
         # 1. 找出新进TOP10的板块
         today_top10 = set(list(today_data.keys())[:10])
-        yesterday_top10 = set(list(yesterday_data.keys())[:10])
+        yesterday_top10 = set(sector['name'] for sector in yesterday_data[:10])
         result['new_sectors'] = list(today_top10 - yesterday_top10)
         
         # 2. 找出热度上升的板块
@@ -700,7 +728,7 @@ class SectorRotationAnalyzer:
         # 4. 找出持续强势板块（连续2天在TOP5）
         if len(dates) >= 2:
             today_top5 = set(list(today_data.keys())[:5])
-            yesterday_top5 = set(list(yesterday_data.keys())[:5])
+            yesterday_top5 = set(sector['name'] for sector in yesterday_data[:5])
             result['persistent_sectors'] = list(today_top5 & yesterday_top5)
         
         # 5. 生成建议
@@ -719,55 +747,6 @@ class SectorRotationAnalyzer:
         
         self._save_history()
         return result
-    
-    def get_sector_trend(self, sector_name: str) -> str:
-        """
-        获取单个板块的趋势
-        
-        Returns:
-            str: 'rising' / 'declining' / 'stable' / 'unknown'
-        """
-        dates = sorted(self.history.keys(), reverse=True)[:3]
-        
-        if len(dates) < 2:
-            return 'unknown'
-        
-        ranks = []
-        for date in dates:
-            data = self.history.get(date, {})
-            if sector_name in data:
-                ranks.append(data[sector_name]['rank'])
-            else:
-                ranks.append(None)
-        
-        valid_ranks = [r for r in ranks if r is not None]
-        if len(valid_ranks) < 2:
-            return 'unknown'
-        
-        # 判断趋势
-        if valid_ranks[0] < valid_ranks[-1]:  # 排名变小 = 上升
-            return 'rising'
-        elif valid_ranks[0] > valid_ranks[-1]:  # 排名变大 = 下降
-            return 'declining'
-        else:
-            return 'stable'
-
-
-# 导出模块
-__all__ = [
-    'UnlockRiskDetector',
-    'ReduceRiskDetector', 
-    'InvestorAnalyzer',
-    'EmotionCycleAnalyzer',
-    'SectorRotationAnalyzer',
-    'FAMOUS_INVESTORS',
-    'AuctionFundFlowAnalyzer',  # ★新增
-    'BacktestSystem'  # ★新增
-]
-
-
-# ==================== P4新增：竞价资金流向分析 ====================
-
 class AuctionFundFlowAnalyzer:
     """竞价资金流向分析器"""
     
@@ -1258,3 +1237,58 @@ class BacktestSystem:
             json.dump(backtest_result, f, ensure_ascii=False, indent=2)
         
         print(f"\n回测结果已保存: {filepath}")
+
+
+# ==================== 7. 市场预测引擎（新增） ====================
+
+class MarketPredictionEngine:
+    """市场预测引擎"""
+    
+    def __init__(self):
+        self.emotion_analyzer = EmotionCycleAnalyzer()
+        self.sector_analyzer = SectorRotationAnalyzer()
+        self.fund_flow_analyzer = AuctionFundFlowAnalyzer()
+    
+    def predict(self, date: str = None) -> Dict:
+        """
+        预测市场走势
+        
+        Returns:
+            {
+                'trend': str,       # 市场趋势（上升/下降/震荡）
+                'confidence': float, # 预测置信度
+                'key_indicators': list, # 关键指标
+                'sector_outlook': dict # 板块展望
+            }
+        """
+        # 实现预测逻辑
+        return {
+            'trend': 'unknown',
+            'confidence': 0.0,
+            'key_indicators': [],
+            'sector_outlook': {}
+        }
+
+
+class RiskAssessmentEngine:
+    """风险评估引擎"""
+    
+    def __init__(self):
+        pass
+    
+    def assess_risk(self, date: str = None) -> Dict:
+        """
+        评估市场风险
+        
+        Returns:
+            {
+                'risk_level': str,  # 风险等级（高/中/低）
+                'risk_factors': list, # 风险因素
+                'position_limit': float # 建议仓位上限
+            }
+        """
+        return {
+            'risk_level': 'medium',
+            'risk_factors': [],
+            'position_limit': 0.5
+        }
